@@ -175,7 +175,8 @@ open(DbName, Options) ->
     case fabric2_server:fetch(DbName) of
         #{} = Db ->
             Db1 = maybe_set_user_ctx(Db, Options),
-            {ok, require_member_check(Db1)};
+            Db2 = set_tx_options(Db1, Options),
+            {ok, require_member_check(Db2)};
         undefined ->
             Result = fabric2_fdb:transactional(DbName, Options, fun(TxDb) ->
                 fabric2_fdb:open(TxDb, Options)
@@ -214,7 +215,7 @@ list_dbs(Options) ->
     Callback = fun(DbName, Acc) -> [DbName | Acc] end,
     DbNames = fabric2_fdb:transactional(fun(Tx) ->
         fabric2_fdb:list_dbs(Tx, Callback, [], Options)
-    end),
+    end, Options),
     lists:reverse(DbNames).
 
 
@@ -235,7 +236,7 @@ list_dbs(UserFun, UserAcc0, Options) ->
         catch throw:{stop, FinalUserAcc} ->
             {ok, FinalUserAcc}
         end
-    end).
+    end, Options).
 
 
 is_admin(Db, {SecProps}) when is_list(SecProps) ->
@@ -999,6 +1000,11 @@ maybe_set_user_ctx(Db, Options) ->
         undefined ->
             Db
     end.
+
+
+set_tx_options(Db, Options) ->
+    TxOptions = fabric2_util:get_value(tx_options, Options, []),
+    Db#{tx_options := TxOptions}.
 
 
 is_member(Db, {SecProps}) when is_list(SecProps) ->
