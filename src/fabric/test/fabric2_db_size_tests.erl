@@ -19,6 +19,24 @@
 -include("fabric2_test.hrl").
 
 
+-define(DIFF(Db, Change, Fun), begin
+        ((fun() ->
+            __Before = db_size(Db),
+            __Result = Fun(),
+            __After = db_size(Db),
+            ?debugFmt("~p - ~p == ~p ?= ~p", [
+                __After,
+                __Before,
+                __After - __Before,
+                Change
+            ]),
+            ?assertEqual(Change, __After - __Before),
+            __Result
+        end)())
+    end
+).
+
+
 db_size_test_() ->
     {
         "Test document CRUD operations",
@@ -32,6 +50,7 @@ db_size_test_() ->
                 ?TDEF(edit_doc),
                 ?TDEF(del_doc),
                 ?TDEF(conflicted_doc),
+                ?TDEF(del_winner),
                 ?TDEF(del_conflict)
             ])
         }
@@ -54,63 +73,94 @@ empty_size({Db, _}) ->
 
 
 new_doc({Db, _}) ->
-    increases(Db, fun() ->
+    % UUID doc id: 32
+    % Revision: 2 + 16
+    % Deleted: 1
+    % Body: {} = 2
+    ?DIFF(Db, 53, fun() ->
         create_doc(Db)
     end).
 
 
 edit_doc({Db, _}) ->
     DocId = fabric2_util:uuid(),
-    {ok, RevId1} = increases(Db, fun() ->
+    {ok, RevId1} = ?DIFF(Db, 53, fun() ->
         create_doc(Db, DocId)
     end),
-    {ok, RevId2} = increases(Db, fun() ->
+    % {} -> {"foo":"bar"} = 13 - 2
+    {ok, RevId2} = ?DIFF(Db, 11, fun() ->
         update_doc(Db, DocId, RevId1, {[{<<"foo">>, <<"bar">>}]})
     end),
-    decreases(Db, fun() ->
+    ?DIFF(Db, -11, fun() ->
         update_doc(Db, DocId, RevId2)
     end).
 
 
 del_doc({Db, _}) ->
     DocId = fabric2_util:uuid(),
-    {ok, RevId} = increases(Db, fun() ->
+    {ok, RevId} = ?DIFF(Db, 64, fun() ->
         create_doc(Db, DocId, {[{<<"foo">>, <<"bar">>}]})
     end),
     % The change here is -11 becuase we're going from
     % {"foo":"bar"} == 13 bytes to {} == 2 bytes.
     % I.e., 2 - 13 == -11
-    diff(Db, fun() ->
+    ?DIFF(Db, -11, fun() ->
         delete_doc(Db, DocId, RevId)
-    end, -11).
+    end).
 
+
+% need to check both new conflict is new winner
+% and that new conflict is not a winner and that
+% the sizes don't interfere which should be doable
+% with different sized bodies.
 
 conflicted_doc({Db, _}) ->
     DocId = fabric2_util:uuid(),
-    Before = db_size(Db),
-    {ok, RevId1} = increases(Db, fun() ->
+    {ok, RevId1} = ?DIFF(Db, 64, fun() ->
         create_doc(Db, DocId, {[{<<"foo">>, <<"bar">>}]})
     end),
-    Between = db_size(Db),
-    increases(Db, fun() ->
+    ?DIFF(Db, 64, fun() ->
+        create_conflict(Db, DocId, RevId1, {[{<<"foo">>, <<"bar">>}]})
+    end).
+
+
+del_winner({Db, _}) ->
+    DocId = fabric2_util:uuid(),
+    {ok, RevId1} = ?DIFF(Db, 64, fun() ->
+        create_doc(Db, DocId, {[{<<"foo">>, <<"bar">>}]})
+    end),
+    {ok, RevId2} = ?DIFF(Db, 64, fun() ->
         create_conflict(Db, DocId, RevId1, {[{<<"foo">>, <<"bar">>}]})
     end),
-    After = db_size(Db),
-    ?assertEqual(After - Between, Between - Before).
+    [_ConflictRev, WinnerRev] = lists:sort([RevId1, RevId2]),
+    ?DIFF(Db, -11, fun() ->
+        {ok, _RevId3} = delete_doc(Db, DocId, WinnerRev),
+        ?debugFmt("~n~w~n~w~n~w~n", [RevId1, RevId2, _RevId3])
+    end).
 
 
 del_conflict({Db, _}) ->
     DocId = fabric2_util:uuid(),
-    {ok, RevId1} = increases(Db, fun() ->
+    {ok, RevId1} = ?DIFF(Db, 64, fun() ->
         create_doc(Db, DocId, {[{<<"foo">>, <<"bar">>}]})
     end),
-    {ok, RevId2} = increases(Db, fun() ->
+    {ok, RevId2} = ?DIFF(Db, 64, fun() ->
         create_conflict(Db, DocId, RevId1, {[{<<"foo">>, <<"bar">>}]})
     end),
-    decreases(Db, fun() ->
-        {ok, RevId3} = delete_doc(Db, DocId, RevId2),
-        ?debugFmt("~p ~p ~p", [RevId1, RevId2, RevId3])
+    [ConflictRev, _WinnerRev] = lists:sort([RevId1, RevId2]),
+    ?DIFF(Db, -11, fun() ->
+        {ok, _RevId3} = delete_doc(Db, DocId, ConflictRev),
+        ?debugFmt("~n~w~n~w~n~w~n", [RevId1, RevId2, _RevId3])
     end).
+
+
+% replicate with attachment
+% replicate removing attachment
+% replicate reusing attachment
+% replicate adding attachment with stub
+% for each, replicate to winner vs non-winner
+% for each, replicate extending winner, vs extending conflict vs new branch
+
 
 
 create_doc(Db) ->
@@ -173,20 +223,6 @@ delete_doc(Db, DocId, {Pos, Rev}, Body) ->
         body = Body
     },
     fabric2_db:update_doc(Db, Doc).
-
-
-constant(Db, Fun) -> check(Db, Fun, fun erlang:'=='/2).
-increases(Db, Fun) -> check(Db, Fun, fun erlang:'>'/2).
-decreases(Db, Fun) -> check(Db, Fun, fun erlang:'<'/2).
-diff(Db, Fun, Change) -> check(Db, Fun, fun(A, B) -> (A - B) == Change end).
-
-check(Db, Fun, Cmp) ->
-    Before = db_size(Db),
-    Result = Fun(),
-    After = db_size(Db),
-    ?debugFmt("~p :: ~p ~p", [erlang:fun_info(Cmp), After, Before]),
-    ?assert(Cmp(After, Before)),
-    Result.
 
 
 db_size(Info) when is_list(Info) ->
