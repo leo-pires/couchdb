@@ -1317,24 +1317,13 @@ local_doc_to_fdb(Db, #doc{} = Doc) ->
         {{K, Chunk}, ChunkId + 1}
     end, 0, chunkify_binary(BVal)),
 
-    % Calculate size
-    TotalSize = case Doc#doc.deleted of
-        true ->
-            0;
-        false ->
-            lists:sum([
-                size(Id),
-                size(StoreRev),
-                couch_ejson_size:encoded_size(Body)
-            ])
-    end,
-
-    RawValue = erlfdb_tuple:pack({?CURR_LDOC_FORMAT, StoreRev, TotalSize}),
+    NewSize = fabric2_util:ldoc_size(Doc),
+    RawValue = erlfdb_tuple:pack({?CURR_LDOC_FORMAT, StoreRev, NewSize}),
 
     % Prefix our tuple encoding to make upgrades easier
     Value = <<255, RawValue/binary>>,
 
-    {Key, Value, TotalSize, Rows}.
+    {Key, Value, NewSize, Rows}.
 
 
 fdb_to_local_doc(_Db, _DocId, not_found, []) ->
