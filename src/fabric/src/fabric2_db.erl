@@ -1417,13 +1417,14 @@ update_doc_interactive(Db, Doc0, Future, _Options) ->
 
     NewRevInfo = #{
         winner => undefined,
+        exists => false,
         deleted => NewDeleted,
         rev_id => {NewRevPos, NewRev},
         rev_path => NewRevPath,
         sequence => undefined,
         branch_count => undefined,
         att_hash => fabric2_util:hash_atts(Atts),
-        rev_size => null
+        rev_size => fabric2_util:rev_size(Doc4)
     },
 
     % Gather the list of possible winnig revisions
@@ -1474,6 +1475,7 @@ update_doc_replicated(Db, Doc0, _Options) ->
 
     DocRevInfo0 = #{
         winner => undefined,
+        exists => false,
         deleted => Deleted,
         rev_id => {RevPos, Rev},
         rev_path => RevPath,
@@ -1520,7 +1522,8 @@ update_doc_replicated(Db, Doc0, _Options) ->
     Doc2 = prep_and_validate(Db, Doc1, PrevRevInfo),
     Doc3 = flush_doc_atts(Db, Doc2),
     DocRevInfo2 = DocRevInfo1#{
-        atts_hash => fabric2_util:hash_atts(Doc3#doc.atts)
+        atts_hash => fabric2_util:hash_atts(Doc3#doc.atts),
+        rev_size => fabric2_util:rev_size(Doc3)
     },
 
     % Possible winners are the previous winner and

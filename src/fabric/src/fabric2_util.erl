@@ -17,6 +17,7 @@
     revinfo_to_revs/1,
     revinfo_to_path/1,
     sort_revinfos/1,
+    rev_size/1,
 
     seq_zero_vs/0,
     seq_max_vs/0,
@@ -76,6 +77,26 @@ rev_sort_key(#{} = RevInfo) ->
         rev_id := {RevPos, Rev}
     } = RevInfo,
     {not Deleted, RevPos, Rev}.
+
+
+rev_size(#doc{} = Doc) ->
+    #doc{
+        id = Id,
+        revs = {Start, [Rev | _]},
+        body = Body,
+        atts = Atts
+    } = Doc,
+
+    lists:sum([
+        size(Id),
+        size(erlfdb_tuple:pack({Start})),
+        size(Rev),
+        1, % FDB tuple encoding of booleans for deleted flag is 1 byte
+        couch_ejson_size:encoded_size(Body),
+        lists:foldl(fun(Att, Acc) ->
+            couch_att:external_size(Att) + Acc
+        end, 0, Atts)
+    ]).
 
 
 seq_zero_vs() ->

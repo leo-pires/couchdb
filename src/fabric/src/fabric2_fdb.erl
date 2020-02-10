@@ -632,7 +632,7 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
 
     % Doc body
 
-    {ok, RevSize} = write_doc_body(Db, Doc),
+    ok = write_doc_body(Db, Doc),
 
     % Attachment bookkeeping
 
@@ -663,8 +663,7 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
     % Revision tree
 
     NewWinner = NewWinner0#{
-        winner := true,
-        rev_size := RevSize
+        winner := true
     },
     NewRevId = maps:get(rev_id, NewWinner),
 
@@ -767,13 +766,9 @@ write_doc(#{} = Db0, Doc, NewWinner0, OldWinner, ToUpdate, ToRemove) ->
     end,
 
     % Update database size
-    SizeIncr = RevSize - lists:foldl(fun(RI, Acc) ->
-        Acc + case maps:get(rev_size, RI, null) of
-            null -> 0;
-            Size -> Size
-        end
-    end, 0, ToRemove),
-    incr_stat(Db, <<"sizes">>, <<"external">>, SizeIncr),
+    AddSize = sum_add_rev_sizes([NewWinner | ToUpdate]),
+    RemSize = sum_rem_rev_sizes(ToRemove),
+    incr_stat(Db, <<"sizes">>, <<"external">>, AddSize - RemSize),
 
     ok.
 
@@ -1091,11 +1086,10 @@ write_doc_body(#{} = Db0, #doc{} = Doc) ->
         tx := Tx
     } = Db = ensure_current(Db0),
 
-    {Rows, RevSize} = doc_to_fdb(Db, Doc),
+    Rows = doc_to_fdb(Db, Doc),
     lists:foreach(fun({Key, Value}) ->
         ok = erlfdb:set(Tx, Key, Value)
-    end, Rows),
-    {ok, RevSize}.
+    end, Rows).
 
 
 clear_doc_body(_Db, _DocId, not_found) ->
@@ -1208,6 +1202,7 @@ fdb_to_revinfo(Key, {?CURR_REV_FORMAT, _, _, _, _, _} = Val) ->
     {_RevFormat, Sequence, BranchCount, RevPath, AttHash, RevSize} = Val,
     #{
         winner => true,
+        exists => true,
         deleted => not NotDeleted,
         rev_id => {RevPos, Rev},
         rev_path => tuple_to_list(RevPath),
@@ -1222,6 +1217,7 @@ fdb_to_revinfo(Key, {?CURR_REV_FORMAT, _, _, _} = Val)  ->
     {_RevFormat, RevPath, AttHash, RevSize} = Val,
     #{
         winner => false,
+        exists => true,
         deleted => not NotDeleted,
         rev_id => {RevPos, Rev},
         rev_path => tuple_to_list(RevPath),
@@ -1240,11 +1236,11 @@ fdb_to_revinfo(Key, {0, RPath}) ->
     fdb_to_revinfo(Key, Val);
 
 fdb_to_revinfo(Key, {1, Seq, BCount, RPath, AttHash}) ->
-    Val = {?CURR_REV_FORMAT, Seq, BCount, RPath, AttHash, null},
+    Val = {?CURR_REV_FORMAT, Seq, BCount, RPath, AttHash, 0},
     fdb_to_revinfo(Key, Val);
 
 fdb_to_revinfo(Key, {1, RPath, AttHash}) ->
-    Val = {?CURR_REV_FORMAT, RPath, AttHash, null},
+    Val = {?CURR_REV_FORMAT, RPath, AttHash, 0},
     fdb_to_revinfo(Key, Val).
 
 
@@ -1271,19 +1267,7 @@ doc_to_fdb(Db, #doc{} = Doc) ->
         {{Key, Chunk}, ChunkId + 1}
     end, 0, Chunks),
 
-    % Calculate the size of this revision
-    TotalSize = lists:sum([
-        size(Id),
-        size(erlfdb_tuple:pack({Start})),
-        size(Rev),
-        1, % FDB tuple encoding of booleans for deleted flag is 1 byte
-        couch_ejson_size:encoded_size(Body),
-        lists:foldl(fun(Att, Acc) ->
-            couch_att:external_size(Att) + Acc
-        end, 0, Atts)
-    ]),
-
-    {Rows, TotalSize}.
+    Rows.
 
 
 fdb_to_doc(_Db, _DocId, _Pos, _Path, []) ->
@@ -1386,6 +1370,29 @@ fdb_to_local_doc(Db, DocId, RawRev, Rows) ->
     BaseRev = erlfdb_tuple:pack({?CURR_LDOC_FORMAT, RawRev, 0}),
     Rev = <<255, BaseRev/binary>>,
     fdb_to_local_doc(Db, DocId, Rev, Rows).
+
+
+sum_add_rev_sizes(RevInfos) ->
+    lists:foldl(fun(RI, Acc) ->
+        #{
+            exists := Exists,
+            rev_size := Size
+        } = RI,
+        case Exists of
+            true -> Acc;
+            false -> Size + Acc
+        end
+    end, 0, RevInfos).
+
+
+sum_rem_rev_sizes(RevInfos) ->
+    lists:foldl(fun(RI, Acc) ->
+        #{
+            exists := true,
+            rev_size := Size
+        } = RI,
+        Size + Acc
+    end, 0, RevInfos).
 
 
 chunkify_binary(Data) ->
