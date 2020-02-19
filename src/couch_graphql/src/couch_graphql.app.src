@@ -1,0 +1,14 @@
+{application, couch_graphql, [
+    {description, "GraphQL layer for CouchDB"},
+    {vsn, "1"},
+    {registered, []},
+    {applications, [
+        kernel,
+        stdlib,
+        couch_epi,
+        chttpd,
+        couch_log
+    ]},
+    {mod, {couch_graphql_app, []}},
+    {env, []}
+]}.
